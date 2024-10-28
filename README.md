@@ -1,17 +1,12 @@
-## Foundry
+## Test for Overnight.fi
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## Requirements
 
-Foundry consists of:
+-   **OS**: Linux or WSL2
+-   **Rust compiler**: Cargo.
+-   **Foundry**: [instalation docs](https://book.getfoundry.sh/getting-started/installation)
+-   **Alchemy key**: [Alchemy](https://www.alchemy.com/)
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
 
 ## Usage
 
@@ -21,7 +16,7 @@ https://book.getfoundry.sh/
 $ forge build
 ```
 
-### Test
+### Test in mainnet fork
 
 ```shell
 $ forge test
