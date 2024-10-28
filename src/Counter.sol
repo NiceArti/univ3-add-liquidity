@@ -11,6 +11,14 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract UniswapV3LiquidityManager {
+    struct LiquidityParams {
+        address poolAddress;
+        uint256 amount0Desired;
+        uint256 amount1Desired;
+        uint256 width;
+    }
+
+
     INonfungiblePositionManager public positionManager;
     ISwapRouter public swapRouter;
 
@@ -19,18 +27,9 @@ contract UniswapV3LiquidityManager {
         swapRouter = ISwapRouter(_swapRouter);
     }
 
-    struct LiquidityParams {
-        address poolAddress;
-        uint256 amount0Desired;
-        uint256 amount1Desired;
-        uint256 width;  // Ширина позиции
-    }
-
  
 
-    function provideLiquidity(
-        LiquidityParams memory params
-    ) external {
+    function provideLiquidity(LiquidityParams memory params) external {
         IUniswapV3Pool pool = IUniswapV3Pool(params.poolAddress);
         (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();  // Получаем текущую цену
 
