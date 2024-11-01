@@ -10,6 +10,14 @@
 
 ## Usage
 
+
+### Instal dependencies
+
+```shell
+$ forge install
+```
+
+
 ### Build
 
 ```shell

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.20;
 
-import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {ISwapRouter} from "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import {Test, console} from "forge-std/Test.sol";
+import {INonfungiblePositionManager} from "./univ3-lib/INonfungiblePositionManager.sol";
+import {IUniswapV3Factory} from "./univ3-lib/IUniswapV3Factory.sol";
+import {TickMath} from "./univ3-lib/TickMath.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -13,120 +13,76 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 contract UniswapV3LiquidityManager is Context {
     using SafeERC20 for IERC20;
 
-    struct LiquidityParams {
-        address poolAddress;
+    struct AddLiquidityParams {
+        address lp;
+        uint256 tokenId;
         uint256 amount0Desired;
         uint256 amount1Desired;
         uint256 width;
     }
 
+    uint256 public constant MAX_WAITING_PERIOD = 300; // 5 minutes
+    INonfungiblePositionManager public immutable POSITION_MANAGER;
+    IUniswapV3Factory public FACTORY;
 
-    INonfungiblePositionManager public positionManager;
-    ISwapRouter public swapRouter;
 
-    constructor(address _positionManager, address _swapRouter) {
-        positionManager = INonfungiblePositionManager(_positionManager);
-        swapRouter = ISwapRouter(_swapRouter);
+
+    constructor(address positionManager, address factory) {
+        POSITION_MANAGER = INonfungiblePositionManager(positionManager);
+        FACTORY = IUniswapV3Factory(factory);
     }
 
- 
+    function addLiquidityWithFixedWidth(AddLiquidityParams memory params) external returns (uint128) {
+        address signer = _msgSender();
 
-    function provideLiquidity(LiquidityParams memory params) external {
-        address sender = _msgSender();
-
-        IUniswapV3Pool pool = IUniswapV3Pool(params.poolAddress);
-        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
-
-        uint256 currentPrice = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (2**192);  // Цена, преобразованная из формата Q64.96
-
-        // Рассчитываем нижнюю и верхнюю цены на основе заданной ширины
-        uint256 upperPrice = currentPrice * (10000 + params.width) / 10000;
-        uint256 lowerPrice = currentPrice * (10000 - params.width) / 10000;
-
-        // Преобразуем цены в тики для Uniswap
-        int24 lowerTick = TickMath.getTickAtSqrtRatio(uint160(_sqrt(lowerPrice) << 96));
-        int24 upperTick = TickMath.getTickAtSqrtRatio(uint160(_sqrt(upperPrice) << 96));
-
-        // Разрешаем positionManager забирать наши токены
-        IERC20(pool.token0()).safeTransferFrom(sender, address(this), params.amount0Desired);
-        IERC20(pool.token1()).safeTransferFrom(sender, address(this), params.amount1Desired);
-
-        IERC20(pool.token0()).approve(address(positionManager), params.amount0Desired);
-        IERC20(pool.token1()).approve(address(positionManager), params.amount1Desired);
+        (
+            ,,
+            address token0,
+            address token1,
+            uint24 fee,
+            int24 tickLower,
+            int24 tickUpper,
+            ,,,,
+        ) = POSITION_MANAGER.positions(params.tokenId);
 
 
-        INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
-            token0: pool.token0(),
-            token1: pool.token1(),
-            fee: pool.fee(),
-            tickLower: lowerTick,
-            tickUpper: upperTick,
+        require(params.lp == FACTORY.getPool(token0, token1, fee), "LP address not equal");
+        require(_calculateWidth(tickLower, tickUpper) == params.width, "Position width does not match expected width");
+
+
+        IERC20(token0).safeTransferFrom(signer, address(this), params.amount0Desired);
+        IERC20(token1).safeTransferFrom(signer, address(this), params.amount1Desired);
+
+
+        IERC20(token0).approve(address(POSITION_MANAGER), params.amount0Desired);
+        IERC20(token1).approve(address(POSITION_MANAGER), params.amount1Desired);
+
+
+        INonfungiblePositionManager.IncreaseLiquidityParams memory positionParams = INonfungiblePositionManager.IncreaseLiquidityParams({
+            tokenId: params.tokenId,
             amount0Desired: params.amount0Desired,
             amount1Desired: params.amount1Desired,
             amount0Min: 0,
             amount1Min: 0,
-            recipient: sender,
-            deadline: block.timestamp + 300  // 5 minutes
+            deadline: block.timestamp + MAX_WAITING_PERIOD
         });
 
-        positionManager.mint(mintParams);
+
+        (uint128 liquidity,,) = POSITION_MANAGER.increaseLiquidity(positionParams);
+
+        return liquidity;
     }
 
-    // Геттер-функция для расчета возможной ликвидности
-    function calculateLiquidity(
-        LiquidityParams memory params
-    ) external view returns (uint256 liquidity, uint256 lowerTick, uint256 upperTick) {
-        IUniswapV3Pool pool = IUniswapV3Pool(params.poolAddress);
-        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();  // Получаем текущую цену
 
-        uint256 currentPrice = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (2**192);  // Цена, преобразованная из формата Q64.96
+    function _calculateWidth(int24 tickLower, int24 tickUpper) internal pure returns (uint256) {
+        uint160 sqrtPriceLower = TickMath.getSqrtRatioAtTick(tickLower);
+        uint160 sqrtPriceUpper = TickMath.getSqrtRatioAtTick(tickUpper);
 
-        // Calculate upper and lower bounds by given width
-        uint256 upperPrice = currentPrice * (10000 + params.width) / 10000;
-        uint256 lowerPrice = currentPrice * (10000 - params.width) / 10000;
+        uint256 lowPrice = uint256(sqrtPriceLower) * uint256(sqrtPriceLower) / (2**192);
+        uint256 highPrice = uint256(sqrtPriceUpper) * uint256(sqrtPriceUpper) / (2**192);
 
-        // Преобразуем цены в тики для Uniswap
-        lowerTick = TickMath.getTickAtSqrtRatio(uint160(_sqrt(lowerPrice) << 96));
-        upperTick = TickMath.getTickAtSqrtRatio(uint160(_sqrt(upperPrice) << 96));
-
-        // Рассчитываем ликвидность для заданного диапазона
-        liquidity = _calculateLiquidityForAmounts(
-            sqrtPriceX96,
-            TickMath.getSqrtRatioAtTick(int24(lowerTick)),
-            TickMath.getSqrtRatioAtTick(int24(upperTick)),
-            params.amount0Desired,
-            params.amount1Desired
-        );
+        // Calculating width using this formula: (highPrice - lowPrice) * 10000 / (lowPrice + highPrice)
+        return (highPrice - lowPrice) * 10000 / (lowPrice + highPrice);
     }
-
-    // Вспомогательная функция для расчета ликвидности
-    function _calculateLiquidityForAmounts(
-        uint160 sqrtPriceX96,
-        uint160 sqrtRatioAX96,
-        uint160 sqrtRatioBX96,
-        uint256 amount0Desired,
-        uint256 amount1Desired
-    ) internal pure returns (uint256 liquidity) {
-        if (sqrtRatioAX96 > sqrtRatioBX96) {
-            (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
-        }
-
-        uint256 liquidity0 = (amount0Desired * (uint256(sqrtRatioBX96) - uint256(sqrtRatioAX96))) /
-            (uint256(sqrtPriceX96) * uint256(sqrtRatioBX96) / 2**96);
-
-        uint256 liquidity1 = (amount1Desired * 2**96) / (uint256(sqrtRatioBX96) - uint256(sqrtRatioAX96));
-
-        liquidity = liquidity0 < liquidity1 ? liquidity0 : liquidity1;
-    }
-
-    // Функция sqrt для расчета
-    function _sqrt(uint256 x) internal pure returns (uint256) {
-        uint256 z = (x + 1) / 2;
-        uint256 y = x;
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
-        }
-        return y;
-    }
+    
 }
